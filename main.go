@@ -3,10 +3,14 @@ package main
 import (
 	"log"
 	"net"
+	"time"
 )
 
-const Port = "6969"
-const safeMode = false
+const (
+	Port        = "6969"
+	safeMode    = true
+	MessageRate = 0.5
+)
 
 func safeRemoteAddr(conn net.Conn) string {
 	if safeMode {
@@ -20,7 +24,7 @@ type MessageType int
 
 const (
 	ClientConnected MessageType = iota + 1
-	DeleteClient
+	ClientDisconnected
 	NewMessage
 )
 
@@ -31,28 +35,45 @@ type Message struct {
 }
 
 type Client struct {
-	conn     net.Conn
-	outgoing chan string
+	Conn          net.Conn
+	LastMessage   time.Time
+	StrikeCounter int
 }
 
 func server(messages chan Message) {
-	conns := map[string]net.Conn{}
+	clients := map[string]*Client{}
 	for {
 		msg := <-messages
 		switch msg.Type {
 		case ClientConnected:
-			conns[msg.Conn.RemoteAddr().String()] = msg.Conn
-		case DeleteClient:
-			delete(conns, msg.Conn.RemoteAddr().String())
+			log.Printf("Client (%s) has been connected", safeRemoteAddr(msg.Conn))
+			clients[msg.Conn.RemoteAddr().String()] = &Client{
+				Conn:        msg.Conn,
+				LastMessage: time.Now(),
+			}
+		case ClientDisconnected:
+			log.Printf("Client %s has been disconnected", safeRemoteAddr(msg.Conn))
+			delete(clients, msg.Conn.RemoteAddr().String())
 		case NewMessage:
-			senderaddr := msg.Conn.RemoteAddr().String()
-			for addr, conn := range conns {
-				if addr != senderaddr {
-					_, err := conn.Write([]byte(msg.Text))
-					if err != nil {
-						//left: remove connection from list
-						log.Printf("Could not send data to %s: %s", safeRemoteAddr(conn), err)
+			now := time.Now()
+			addr := msg.Conn.RemoteAddr().String()
+			author := clients[addr]
+			if now.Sub(clients[addr].LastMessage).Seconds() >= MessageRate {
+				log.Printf("Client %s sent message %s", safeRemoteAddr(msg.Conn), msg.Text)
+				author.LastMessage = now
+				author.StrikeCounter = 0
+				for _, client := range clients {
+					if client.Conn.RemoteAddr().String() != addr {
+						_, err := client.Conn.Write([]byte(msg.Text))
+						if err != nil {
+							log.Printf("")
+						}
 					}
+				}
+			} else {
+				author.StrikeCounter += 1
+				if author.StrikeCounter >= 10 {
+
 				}
 			}
 		}
@@ -60,16 +81,21 @@ func server(messages chan Message) {
 }
 
 func client(conn net.Conn, messages chan Message) {
-	buffer := make([]byte, 512)
+	buffer := make([]byte, 64)
 	for {
 		n, err := conn.Read(buffer)
 		if err != nil {
+			log.Printf("Could not read from %s: %s", safeRemoteAddr(conn), err)
 			conn.Close()
 			messages <- Message{
-				Type: DeleteClient,
+				Type: ClientDisconnected,
 				Conn: conn,
 			}
 			return
+		}
+		text := string(buffer[0:n])
+		if text == ":quit" {
+
 		}
 		messages <- Message{
 			Type: NewMessage,
