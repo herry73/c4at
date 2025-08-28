@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"log"
 	"net"
 	"time"
@@ -9,14 +10,15 @@ import (
 const (
 	Port        = "6969"
 	safeMode    = true
-	MessageRate = 0.5
+	MessageRate = 0.08
+	BanLimit    = 60.0
 )
 
-func safeRemoteAddr(conn net.Conn) string {
+func sensitive(message string) string {
 	if safeMode {
 		return "[REDACTED]"
 	} else {
-		return conn.RemoteAddr().String()
+		return message
 	}
 }
 
@@ -42,38 +44,64 @@ type Client struct {
 
 func server(messages chan Message) {
 	clients := map[string]*Client{}
+	bannedList := map[string]time.Time{}
 	for {
 		msg := <-messages
 		switch msg.Type {
 		case ClientConnected:
-			log.Printf("Client (%s) has been connected", safeRemoteAddr(msg.Conn))
-			clients[msg.Conn.RemoteAddr().String()] = &Client{
-				Conn:        msg.Conn,
-				LastMessage: time.Now(),
+			addr := msg.Conn.RemoteAddr().(*net.TCPAddr)
+			bannedAt, banned := bannedList[addr.IP.String()]
+			now := time.Now()
+			if banned {
+				if time.Since(bannedAt) >= BanLimit {
+					delete(bannedList, addr.IP.String())
+				}
+			}
+			if !banned {
+				log.Printf("Client (%s) has been connected\n", sensitive(addr.String()))
+				clients[msg.Conn.RemoteAddr().String()] = &Client{
+					Conn:        msg.Conn,
+					LastMessage: time.Now(),
+				}
+			} else {
+				msg.Conn.Write([]byte(fmt.Sprintf("You are banned lil bro: %f secs left\n", BanLimit-(now.Sub(bannedAt).Seconds()))))
+				msg.Conn.Close()
 			}
 		case ClientDisconnected:
-			log.Printf("Client %s has been disconnected", safeRemoteAddr(msg.Conn))
-			delete(clients, msg.Conn.RemoteAddr().String())
+			addrStr := msg.Conn.RemoteAddr().String()
+			if _, ok := clients[addrStr]; ok {
+				log.Printf("Client %s has been disconnected\n", sensitive(addrStr))
+				delete(clients, addrStr)
+			}
 		case NewMessage:
 			now := time.Now()
-			addr := msg.Conn.RemoteAddr().String()
-			author := clients[addr]
-			if now.Sub(clients[addr].LastMessage).Seconds() >= MessageRate {
-				log.Printf("Client %s sent message %s", safeRemoteAddr(msg.Conn), msg.Text)
+			Authoraddr := msg.Conn.RemoteAddr().String()
+
+			author, ok := clients[Authoraddr]
+
+			if !ok {
+				log.Printf("WARNING: Received message from unknown client: %s", sensitive(Authoraddr))
+				continue
+			}
+
+			if now.Sub(clients[Authoraddr].LastMessage).Seconds() >= MessageRate {
+				log.Printf("Client %s sent message %s\n", sensitive(Authoraddr), msg.Text)
 				author.LastMessage = now
 				author.StrikeCounter = 0
 				for _, client := range clients {
-					if client.Conn.RemoteAddr().String() != addr {
+					if client.Conn.RemoteAddr().String() != Authoraddr {
 						_, err := client.Conn.Write([]byte(msg.Text))
 						if err != nil {
-							log.Printf("")
+							log.Printf("Could not send data to %s\n", sensitive(client.Conn.RemoteAddr().String()))
 						}
 					}
 				}
 			} else {
 				author.StrikeCounter += 1
 				if author.StrikeCounter >= 10 {
-
+					msg.Conn.Write([]byte("You are banned lil bro\n"))
+					bannedList[msg.Conn.RemoteAddr().(*net.TCPAddr).IP.String()] = now
+					author.Conn.Close()
 				}
 			}
 		}
@@ -85,7 +113,7 @@ func client(conn net.Conn, messages chan Message) {
 	for {
 		n, err := conn.Read(buffer)
 		if err != nil {
-			log.Printf("Could not read from %s: %s", safeRemoteAddr(conn), err)
+			log.Printf("Could not read from %s: %s\n", sensitive(conn.RemoteAddr().String()), err)
 			conn.Close()
 			messages <- Message{
 				Type: ClientDisconnected,
@@ -102,7 +130,6 @@ func client(conn net.Conn, messages chan Message) {
 			Text: string(buffer[0:n]),
 			Conn: conn,
 		}
-
 	}
 }
 
@@ -124,7 +151,7 @@ func main() {
 			//handle error
 			log.Printf("ERROR: Could not accept a connection: %s\n", err)
 		}
-		log.Printf("Connection accepted from %s\n", safeRemoteAddr(conn))
+		log.Printf("Connection accepted from %s\n", sensitive(conn.RemoteAddr().String()))
 		messages <- Message{
 			Type: ClientConnected,
 			Conn: conn,
