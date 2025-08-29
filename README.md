@@ -15,7 +15,7 @@ Features
 
     Safe Mode: An optional feature to redact sensitive information (like client IP addresses) from server logs.
 
-How to Run the Server
+# How to Run the Server
 
     Ensure you have Go installed: If not, you can download it from the official Go website.
 
@@ -27,24 +27,15 @@ How to Run the Server
 
     The server will start listening for TCP connections on port 6969.
 
-How to Connect
+# How to Connect
 
 You can connect to the server using a simple TCP client. For a quick test, you can use the nc (netcat) command-line utility.
 
 nc localhost 6969
 
 Once connected, you can type your messages and press enter to send them.
-Code Structure
 
-    main(): The entry point of the application. It sets up the TCP listener, creates a message channel, and starts the server goroutine.
-
-    server(): The core logic of the chat application. It manages connected clients, handles incoming messages from the channel, and enforces moderation rules.
-
-    client(): A goroutine for each connected client that reads messages from the connection and sends them to the server goroutine.
-
-    sensitive(): A utility function that redacts sensitive information if SafeMode is enabled.
-
-Constants
+# Constants
 
 The server's behavior is configured via constants at the top of the file:
 
