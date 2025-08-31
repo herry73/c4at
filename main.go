@@ -5,12 +5,13 @@ import (
 	"log"
 	"net"
 	"time"
+	"unicode/utf8"
 )
 
 const (
 	Port        = "6969"
 	safeMode    = true
-	MessageRate = 0.08
+	MessageRate = 1.08
 	BanLimit    = 60.0
 )
 
@@ -53,8 +54,9 @@ func server(messages chan Message) {
 			bannedAt, banned := bannedList[addr.IP.String()]
 			now := time.Now()
 			if banned {
-				if time.Since(bannedAt) >= BanLimit {
+				if time.Since(bannedAt).Seconds() >= BanLimit {
 					delete(bannedList, addr.IP.String())
+					banned = false
 				}
 			}
 			if !banned {
@@ -77,31 +79,36 @@ func server(messages chan Message) {
 			now := time.Now()
 			Authoraddr := msg.Conn.RemoteAddr().String()
 
-			author, ok := clients[Authoraddr]
-
-			if !ok {
-				log.Printf("WARNING: Received message from unknown client: %s", sensitive(Authoraddr))
-				continue
-			}
-
-			if now.Sub(clients[Authoraddr].LastMessage).Seconds() >= MessageRate {
-				log.Printf("Client %s sent message %s\n", sensitive(Authoraddr), msg.Text)
-				author.LastMessage = now
-				author.StrikeCounter = 0
-				for _, client := range clients {
-					if client.Conn.RemoteAddr().String() != Authoraddr {
-						_, err := client.Conn.Write([]byte(msg.Text))
-						if err != nil {
-							log.Printf("Could not send data to %s\n", sensitive(client.Conn.RemoteAddr().String()))
+			author := clients[Authoraddr]
+			if author != nil {
+				if utf8.Valid([]byte(msg.Text)) {
+					if now.Sub(clients[Authoraddr].LastMessage).Seconds() >= MessageRate {
+						log.Printf("Client %s sent message: %s\n", sensitive(Authoraddr), msg.Text)
+						author.LastMessage = now
+						author.StrikeCounter = 0
+						for _, client := range clients {
+							if client.Conn.RemoteAddr().String() != Authoraddr {
+								/*_, err :=*/ client.Conn.Write([]byte(msg.Text))
+								// if err != nil {
+								//  log.Printf("Could not send data to %s\n", sensitive(client.Conn.RemoteAddr().String()))
+								// }
+							}
+						}
+					} else {
+						author.StrikeCounter += 1
+						if author.StrikeCounter >= 10 {
+							msg.Conn.Write([]byte("You are banned lil bro\n"))
+							bannedList[msg.Conn.RemoteAddr().(*net.TCPAddr).IP.String()] = now
+							author.Conn.Close()
 						}
 					}
-				}
-			} else {
-				author.StrikeCounter += 1
-				if author.StrikeCounter >= 10 {
-					msg.Conn.Write([]byte("You are banned lil bro\n"))
-					bannedList[msg.Conn.RemoteAddr().(*net.TCPAddr).IP.String()] = now
-					author.Conn.Close()
+				} else {
+					author.StrikeCounter += 1
+					if author.StrikeCounter >= 10 {
+						msg.Conn.Write([]byte("You are banned lil bro\n"))
+						bannedList[msg.Conn.RemoteAddr().(*net.TCPAddr).IP.String()] = now
+						author.Conn.Close()
+					}
 				}
 			}
 		}
@@ -113,7 +120,6 @@ func client(conn net.Conn, messages chan Message) {
 	for {
 		n, err := conn.Read(buffer)
 		if err != nil {
-			log.Printf("Could not read from %s: %s\n", sensitive(conn.RemoteAddr().String()), err)
 			conn.Close()
 			messages <- Message{
 				Type: ClientDisconnected,
@@ -122,12 +128,9 @@ func client(conn net.Conn, messages chan Message) {
 			return
 		}
 		text := string(buffer[0:n])
-		if text == ":quit" {
-
-		}
 		messages <- Message{
 			Type: NewMessage,
-			Text: string(buffer[0:n]),
+			Text: text,
 			Conn: conn,
 		}
 	}
@@ -138,7 +141,7 @@ func main() {
 	ln, err := net.Listen("tcp", ":"+Port)
 	if err != nil {
 		// handle error
-		log.Fatalf("ERROR: Could not listen to port %s: %s\n", Port, err)
+		log.Fatalf("ERROR: Could not listen to port %s: %s\n", Port, sensitive(err.Error()))
 
 	}
 	log.Printf("Listening to TCP Connections on Port %s ....\n", Port)
@@ -149,7 +152,7 @@ func main() {
 		conn, err := ln.Accept()
 		if err != nil {
 			//handle error
-			log.Printf("ERROR: Could not accept a connection: %s\n", err)
+			log.Printf("ERROR: Could not accept a connection: %s\n", sensitive(err.Error()))
 		}
 		log.Printf("Connection accepted from %s\n", sensitive(conn.RemoteAddr().String()))
 		messages <- Message{
